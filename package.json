@@ -1,8 +1,12 @@
-{
-  "dependencies": {
-    "cors": "^2.8.6"
-  },
-  "devDependencies": {
-    "@types/cors": "^2.8.19"
-  }
+"scripts": {
+  "dev": "tsx watch src/server/api.ts",
+  "build": "tsc",
+  "start": "node dist/server/api.js",
+  "test": "vitest run",
+  "test:watch": "vitest",
+  "test:ghost": "vitest run tests/doge-ghost.test.ts",
+  "seed": "tsx src/scripts/seed.ts",
+  "paper-trade": "tsx src/scripts/paper-trade.ts",
+  "lint": "eslint src/ --ext .ts",
+  "typecheck": "tsc --noEmit"
 }
