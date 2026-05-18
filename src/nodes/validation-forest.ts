@@ -46,7 +46,7 @@ export class ValidationForest {
       const validation = await this.validateSignal(ripple);
       if (!validation.passed) {
         this.rejectionLog.push({ rippleId: ripple.id, reason: validation.reason, timestamp: Date.now() });
-        return this.createRejectionRipple(ripple, validation.reason);
+        return this.createRejectionRipple(ripple, validation.reason || 'unknown');
       }
     }
 
