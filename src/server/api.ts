@@ -21,7 +21,7 @@ const exchangeClient = new ExchangeClient({
   mode: (process.env.TRADING_MODE as 'paper' | 'live') || 'paper',
   exchangeId: process.env.EXCHANGE_ID || 'binance',
   apiKey: process.env.EXCHANGE_API_KEY,
-  secret: process.env.EXCHANGE_SECRET,
+  secret: process.env.EXCHANGE_SECRET || process.env.EXCHANGE_API_SECRET,
   sandbox: process.env.EXCHANGE_SANDBOX !== 'false',
 });
 
