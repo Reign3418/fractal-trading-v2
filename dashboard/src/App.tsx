@@ -73,6 +73,10 @@ function App() {
   const [exchange, setExchange] = useState<any>(null);
   const [prices, setPrices] = useState<any[]>([]);
   const [coastStatus, setCoastStatus] = useState<any>(null);
+  const [performance, setPerformance] = useState<any>(null);
+  const [trades, setTrades] = useState<any[]>([]);
+  const [equity, setEquity] = useState<any[]>([]);
+  const [openTrades, setOpenTrades] = useState<any[]>([]);
 
   useEffect(() => {
     Promise.all([
@@ -85,8 +89,12 @@ function App() {
       fetch(`${API_URL}/api/exchange/status`).then(r => r.json().catch(() => null)).catch(() => null),
       fetch(`${API_URL}/api/coast/prices`).then(r => r.json().catch(() => [])).catch(() => []),
       fetch(`${API_URL}/api/coast/status`).then(r => r.json().catch(() => null)).catch(() => null),
+      fetch(`${API_URL}/api/performance`).then(r => r.json().catch(() => null)).catch(() => null),
+      fetch(`${API_URL}/api/trades?limit=20`).then(r => r.json().catch(() => [])).catch(() => []),
+      fetch(`${API_URL}/api/equity`).then(r => r.json().catch(() => [])).catch(() => []),
+      fetch(`${API_URL}/api/positions`).then(r => r.json().catch(() => [])).catch(() => []),
     ])
-      .then(([h, s, strat, sig, ast, btcAnalysis, ex, pr, cs]) => {
+      .then(([h, s, strat, sig, ast, btcAnalysis, ex, pr, cs, perf, trd, eq, ot]) => {
         setHealth(h);
         setState(s);
         setStrategies(strat);
@@ -97,6 +105,10 @@ function App() {
         setExchange(ex);
         setPrices(Array.isArray(pr) ? pr : []);
         setCoastStatus(cs);
+        setPerformance(perf);
+        setTrades(Array.isArray(trd) ? trd : []);
+        setEquity(Array.isArray(eq) ? eq : []);
+        setOpenTrades(Array.isArray(ot) ? ot : []);
         // Fetch backtests if city data available
         if (h?.city?.backtests > 0) {
           // Backtests are embedded in city stats, no separate endpoint
@@ -205,6 +217,14 @@ function App() {
     handleRefresh();
   };
 
+  const closePosition = async (asset: string) => {
+    await fetch(`${API_URL}/api/close`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ asset, reason: 'manual' }),
+    });
+    handleRefresh();
+  };
+
   const configureExchange = async (e: React.FormEvent) => {
     e.preventDefault();
     const form = e.target as HTMLFormElement;
@@ -277,6 +297,11 @@ function App() {
         <Card title="Strategies" value={cityStats?.strategies || 0} color="#06b6d4" />
         <Card title="Analysis Signals" value={signals.length} color="#ec4899" />
         <Card title="Live Prices" value={prices.find((p: any) => p.asset === 'BTC')?.price ? `$${prices.find((p: any) => p.asset === 'BTC').price.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : '-'} color="#f59e0b" />
+      </div>
+      <div className="grid" style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>
+        <Card title="P&L Today" value={`$${(performance?.pnlToday || 0) >= 0 ? '+' : ''}${(performance?.pnlToday || 0).toFixed(2)}`} color={(performance?.pnlToday || 0) >= 0 ? '#22c55e' : '#ef4444'} />
+        <Card title="Win Rate" value={`${((performance?.winRate || 0) * 100).toFixed(1)}%`} color="#3b82f6" />
+        <Card title="Total Trades" value={performance?.tradesToday || 0} color="#8b5cf6" />
       </div>
 
       {/* ===== ACTION BUTTONS ===== */}
@@ -398,6 +423,117 @@ function App() {
               </div>
             ))}
           </>
+        )}
+      </section>
+
+      {/* ===== PERFORMANCE OVERVIEW ===== */}
+      <section>
+        <h2>Performance</h2>
+        {performance && (
+          <div>
+            <div className="grid" style={{ gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
+              <Card title="Win Rate" value={`${(performance.winRate * 100).toFixed(1)}%`} color="#3b82f6" />
+              <Card title="Total P&L" value={`$${performance.totalPnl?.toLocaleString(undefined, { maximumFractionDigits: 2 })}`} color={performance.totalPnl >= 0 ? '#22c55e' : '#ef4444'} />
+              <Card title="Sharpe" value={performance.sharpeRatio?.toFixed(2) || '0'} color="#f59e0b" />
+            </div>
+            <div className="grid" style={{ gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, marginTop: 8 }}>
+              <Card title="Avg Win" value={`$${performance.avgWin?.toFixed(2)}`} color="#22c55e" />
+              <Card title="Avg Loss" value={`$${Math.abs(performance.avgLoss || 0).toFixed(2)}`} color="#ef4444" />
+              <Card title="Max Drawdown" value={`${performance.maxDrawdownPercent?.toFixed(1)}%`} color="#ef4444" />
+            </div>
+            <div className="grid" style={{ gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, marginTop: 8 }}>
+              <Card title="Trades Today" value={performance.tradesToday || 0} color="#8b5cf6" />
+              <Card title="P&L Today" value={`$${(performance.pnlToday || 0).toFixed(2)}`} color={(performance.pnlToday || 0) >= 0 ? '#22c55e' : '#ef4444'} />
+              <Card title="Profit Factor" value={performance.profitFactor?.toFixed(2) || '0'} color="#06b6d4" />
+            </div>
+            {performance.bestTrade && (
+              <div className="row" style={{ marginTop: 8 }}>
+                <span className="name" style={{ color: '#22c55e' }}>Best: {performance.bestTrade.asset} +${performance.bestTrade.pnl?.toFixed(2)}</span>
+                {performance.worstTrade && (
+                  <span className="name" style={{ color: '#ef4444' }}>Worst: {performance.worstTrade.asset} ${performance.worstTrade.pnl?.toFixed(2)}</span>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </section>
+
+      {/* ===== OPEN TRADES ===== */}
+      <section>
+        <h2>Open Trades ({openTrades.length})</h2>
+        {openTrades.length === 0 ? <p className="empty">No open trades</p> : 
+          openTrades.map((t: any) => (
+            <div key={t.id} className="row">
+              <span className="name">{t.asset} {t.side}</span>
+              <span>{t.quantity?.toFixed(4)} @ ${t.entryPrice?.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
+              <span style={{ color: (t.pnl || 0) >= 0 ? '#22c55e' : '#ef4444' }}>
+                {(t.pnl || 0) >= 0 ? '+' : ''}${(t.pnl || 0).toFixed(2)} ({t.pnlPercent?.toFixed(1) || 0}%)
+              </span>
+              <button onClick={() => closePosition(t.asset)} style={{ fontSize: 11, padding: '2px 8px' }}>Close</button>
+            </div>
+          ))
+        }
+      </section>
+
+      {/* ===== TRADE HISTORY ===== */}
+      <section>
+        <h2>Trade History ({trades.length})</h2>
+        {trades.length === 0 ? <p className="empty">No trades yet</p> :
+          trades.filter((t: any) => t.status === 'CLOSED').map((t: any) => (
+            <div key={t.id} className="row">
+              <span className="name">{t.asset} {t.side}</span>
+              <span>${t.entryPrice?.toLocaleString()} → ${t.exitPrice?.toLocaleString()}</span>
+              <span style={{ color: (t.pnl || 0) >= 0 ? '#22c55e' : '#ef4444' }}>
+                {(t.pnl || 0) >= 0 ? '+' : ''}${(t.pnl || 0).toFixed(2)} ({t.pnlPercent?.toFixed(1)}%)
+              </span>
+              <span className="meta">{t.closeReason || 'signal'}</span>
+            </div>
+          ))
+        }
+      </section>
+
+      {/* ===== EQUITY CURVE ===== */}
+      <section>
+        <h2>Equity Curve</h2>
+        {equity.length > 1 && (
+          <div>
+            <div className="row">
+              <span>Current Equity</span>
+              <span style={{ color: '#22c55e', fontWeight: 'bold' }}>
+                ${equity[equity.length - 1].equity?.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+              </span>
+            </div>
+            <div className="row">
+              <span>Starting Balance</span>
+              <span>$100,000</span>
+            </div>
+            <div className="row">
+              <span>Return</span>
+              <span style={{ color: ((equity[equity.length - 1].equity - 100000) / 100000 * 100) >= 0 ? '#22c55e' : '#ef4444' }}>
+                {(((equity[equity.length - 1].equity - 100000) / 100000) * 100).toFixed(2)}%
+              </span>
+            </div>
+            {/* Simple bar chart with div widths */}
+            <div style={{ marginTop: 12, height: 80, display: 'flex', alignItems: 'flex-end', gap: 1, borderBottom: '1px solid #334155', padding: '0 4px' }}>
+              {equity.slice(-50).map((point: any, i: number) => {
+                const eqSlice = equity.slice(-50);
+                const minEq = Math.min(...eqSlice.map((e: any) => e.equity));
+                const maxEq = Math.max(...eqSlice.map((e: any) => e.equity));
+                const range = maxEq - minEq || 1;
+                const height = ((point.equity - minEq) / range) * 70 + 5;
+                const isUp = i > 0 && point.equity >= eqSlice[Math.max(0, i - 1)].equity;
+                return (
+                  <div key={i} style={{
+                    flex: 1,
+                    height: `${height}%`,
+                    background: isUp ? '#22c55e' : '#ef4444',
+                    borderRadius: '1px 1px 0 0',
+                    minHeight: 2,
+                  }} />
+                );
+              })}
+            </div>
+          </div>
         )}
       </section>
 

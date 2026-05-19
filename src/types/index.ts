@@ -135,3 +135,55 @@ export interface MarketData {
   low24h: number;
   timestamp: number;
 }
+
+// === Execution & Tracking Types ===
+export interface Trade {
+  id: string;
+  asset: string;
+  side: 'BUY' | 'SELL';
+  type: 'OPEN' | 'CLOSE';
+  quantity: number;
+  entryPrice: number;
+  exitPrice?: number;
+  pnl?: number;
+  pnlPercent?: number;
+  status: 'OPEN' | 'CLOSED';
+  openedAt: number;
+  closedAt?: number;
+  strategyId?: string;
+  closeReason?: 'signal' | 'liquidation' | 'manual' | 'stop_loss' | 'take_profit';
+}
+
+export interface EquityPoint {
+  timestamp: number;
+  balance: number;
+  equity: number;
+  openPositions: number;
+}
+
+export interface PerformanceSnapshot {
+  totalTrades: number;
+  openTrades: number;
+  closedTrades: number;
+  winningTrades: number;
+  losingTrades: number;
+  winRate: number;
+  totalPnl: number;
+  avgWin: number;
+  avgLoss: number;
+  profitFactor: number;
+  maxDrawdown: number;
+  maxDrawdownPercent: number;
+  sharpeRatio: number;
+  currentBalance: number;
+  currentEquity: number;
+  bestTrade: Trade | null;
+  worstTrade: Trade | null;
+  avgTradeDuration: number;
+  tradesToday: number;
+  pnlToday: number;
+  tradesThisWeek: number;
+  pnlThisWeek: number;
+  tradesThisMonth: number;
+  pnlThisMonth: number;
+}

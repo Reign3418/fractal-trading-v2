@@ -9,6 +9,8 @@ import { StrategyCity } from '../nodes/strategy-city';
 import { Watershed } from '../lib/watershed';
 import { ExchangeClient } from '../lib/exchange';
 import { MarketCoast } from '../nodes/market-coast';
+import { PerformanceTracker } from '../lib/tracker';
+import { ExecutionMountain } from '../nodes/execution-mountain';
 
 const app = express();
 app.use(cors());
@@ -39,6 +41,16 @@ const mockExchange = {
   reset() { exchangeClient.reset(); this.positions = {}; },
 };
 
+// ===================================================================
+// PERFORMANCE TRACKER
+// ===================================================================
+const tracker = new PerformanceTracker(100000); // $100k starting balance
+
+// ===================================================================
+// EXECUTION MOUNTAIN
+// ===================================================================
+const mountain = new ExecutionMountain({ nodeName: 'execution-mountain', exchangeClient, tracker });
+
 const stateStore = {
   data: null as any,
   async save(state: any) { this.data = JSON.parse(JSON.stringify(state)); },
@@ -66,6 +78,7 @@ watershed.register('trading-river', { elevation: 400, terrain: 'river', handler:
 watershed.register('analysis-ocean', { elevation: 250, terrain: 'ocean', handler: ocean });
 watershed.register('strategy-city', { elevation: 600, terrain: 'city', handler: city });
 watershed.register('market-coast', { elevation: 150, terrain: 'coast', handler: coast });
+watershed.register('execution-mountain', { elevation: 300, terrain: 'mountain', handler: mountain });
 
 // ===================================================================
 // RIPPLE ROUTER
@@ -81,6 +94,7 @@ async function routeRipple(ripple: Ripple): Promise<any> {
     else if (nodeName === 'analysis-ocean') await ocean.receive(route.ripple);
     else if (nodeName === 'strategy-city') await city.receive(route.ripple);
     else if (nodeName === 'market-coast') await coast.receive(route.ripple);
+    else if (nodeName === 'execution-mountain') await mountain.receive(route.ripple);
   }
   return { routedTo: routes.map(r => r.nodeName) };
 }
@@ -100,6 +114,8 @@ app.get('/api/health', (_req, res) => {
     city: city.getStats(),
     coast: coast.getStatus(),
     exchange: exchangeClient.getStatus(),
+    mountain: mountain.getStats(),
+    tracker: tracker.getSnapshot(),
   });
 });
 
@@ -149,35 +165,38 @@ app.post('/api/ripple', async (req, res) => {
 });
 
 // ===================================================================
-// HEARTBEAT — Coast fetches, Forest detects, Ocean analyzes, River routes, Lake commits
+// HEARTBEAT — Coast fetches → Ocean analyzes → City signals → Mountain executes → Forest detects → Lake commits
 // ===================================================================
 app.post('/api/heartbeat', async (_req, res) => {
-  console.log('[API] Heartbeat — Coast fetches, Forest detects, Ocean analyzes, River routes, Lake commits');
+  console.log('[API] Heartbeat — Coast fetches → Ocean analyzes → City signals → Mountain executes → Forest detects → Lake commits');
 
-  // Step 1: Coast fetches live prices
+  // Step 1: Coast fetches prices
   await coast.fetchPrices();
-  console.log(`[API] Coast fetched prices for ${coast.trackedAssets.length} assets`);
 
-  // Step 2: Forest detects liquidations (existing logic)
-  const liquidations = await forest.checkLiquidations();
-
-  // Step 3: Analysis Ocean runs analysis
+  // Step 2: Ocean analyzes
   const analysisAssets = coast.trackedAssets;
   const analyses: any[] = [];
   for (const asset of analysisAssets) {
     try {
       const result = await ocean.analyze(asset);
       analyses.push({ asset, signal: result.overallSignal, confidence: result.confidence });
-    } catch (e) {
-      console.log(`[API] Analysis failed for ${asset}:`, (e as Error).message);
-    }
+    } catch (e) { console.log(`[API] Analysis failed:`, (e as Error).message); }
   }
 
-  // Step 4: Route liquidations (existing logic preserved)
+  // Step 3: City generates signals from analysis (analysis → signal → execution)
+  // This happens through ripple routing when ocean sends ANALYSIS ripples
+
+  // Step 4: Forest checks liquidations
+  const liquidations = await forest.checkLiquidations();
+
+  // Step 5: Route liquidations through mountain for P&L tracking
   for (const liq of liquidations) {
+    await mountain.receive(liq); // Track liquidation P&L
     await river.receive(liq);
+
     const asset = liq.payload.asset;
     const directiveId = liq.payload.directiveId;
+
     delete lake.canonicalState.openPositions[asset];
     if (directiveId && lake.canonicalState.directives[directiveId]) {
       lake.canonicalState.directives[directiveId].status = 'VOID';
@@ -190,13 +209,21 @@ app.post('/api/heartbeat', async (_req, res) => {
     lake.logDecision('LIQUIDATION', { asset, directiveId, price: liq.payload.exitPrice });
   }
 
+  // Step 6: Update equity tracking
+  const prices: Record<string, number> = {};
+  for (const [asset, data] of coast.priceCache) {
+    prices[asset] = data.price;
+  }
+  tracker.recordEquity(100000 + tracker.getTotalPnl(), tracker.getUnrealizedPnl(prices));
+
   res.json({
     heartbeat: true,
     liquidationsDetected: liquidations.length,
     analysesRun: analyses.length,
     analysisSummary: analyses,
     pricesFetched: coast.priceCache.size,
-    nodesChecked: ['market-coast', 'validation-forest', 'analysis-ocean', 'trading-river', 'strategy-city', 'state-lake'],
+    tracker: tracker.getSnapshot(prices),
+    nodesChecked: ['market-coast', 'validation-forest', 'analysis-ocean', 'trading-river', 'strategy-city', 'execution-mountain', 'state-lake'],
     state: lake.getState(),
   });
 });
@@ -256,6 +283,69 @@ app.post('/api/analyze', async (req, res) => {
 app.get('/api/detectors/:asset', (req, res) => {
   const history = ocean.getAnalysisHistory(req.params.asset, 1);
   res.json(history.length > 0 ? history[0].detectors : []);
+});
+
+// ===================================================================
+// TRACKING & PERFORMANCE ENDPOINTS
+// ===================================================================
+app.get('/api/performance', (_req, res) => {
+  const prices: Record<string, number> = {};
+  for (const [asset, data] of coast.priceCache) {
+    prices[asset] = data.price;
+  }
+  res.json(tracker.getSnapshot(prices));
+});
+
+app.get('/api/trades', (req, res) => {
+  const { asset, status, limit } = req.query;
+  const trades = tracker.getTrades({
+    asset: asset as string | undefined,
+    status: status as 'OPEN' | 'CLOSED' | undefined,
+    limit: limit ? parseInt(limit as string) : 50,
+  });
+  res.json(trades);
+});
+
+app.get('/api/trades/:id', (req, res) => {
+  const trade = tracker.trades.get(req.params.id);
+  res.json(trade || { error: 'Trade not found' });
+});
+
+app.get('/api/equity', (_req, res) => {
+  res.json(tracker.getEquityHistory());
+});
+
+// ===================================================================
+// EXECUTION ENDPOINTS
+// ===================================================================
+app.post('/api/execute', async (req, res) => {
+  const { asset, side, quantity, price, strategyId } = req.body;
+  const currentPrice = price || await exchangeClient.getPrice(asset);
+
+  const trade = tracker.recordEntry({
+    asset,
+    side: side.toUpperCase(),
+    quantity,
+    price: currentPrice,
+    strategyId,
+  });
+
+  // Create the order
+  const order = await exchangeClient.createOrder({
+    asset,
+    side,
+    type: 'market',
+    amount: quantity,
+  });
+
+  res.json({ executed: true, tradeId: trade.id, orderId: order.id, price: currentPrice });
+});
+
+app.post('/api/close', async (req, res) => {
+  const { asset, price, reason } = req.body;
+  const exitPrice = price || await exchangeClient.getPrice(asset);
+  const closed = await mountain.closePosition(asset, exitPrice, reason || 'manual');
+  res.json({ closed: true, trades: closed.map(t => ({ id: t.id, pnl: t.pnl })) });
 });
 
 // ===================================================================
@@ -342,8 +432,8 @@ coast.startFeed(30000);
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Fractal Trading v2 on port ${PORT}`);
-  console.log(`Nodes: state-lake, validation-forest, trading-river, market-coast, analysis-ocean, strategy-city`);
-  console.log(`POST /api/heartbeat — Coast fetches → Forest detects → Ocean analyzes → River routes → Lake commits`);
+  console.log(`Nodes: state-lake, validation-forest, trading-river, market-coast, analysis-ocean, strategy-city, execution-mountain`);
+  console.log(`POST /api/heartbeat — Coast → Ocean → City → Mountain → Forest → Lake`);
 });
 
 export default app;
