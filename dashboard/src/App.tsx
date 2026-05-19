@@ -70,6 +70,9 @@ function App() {
   const [backtests, setBacktests] = useState<BacktestResult[]>([]);
   const [modalOpen, setModalOpen] = useState('');
   const [modalData, setModalData] = useState<any>({});
+  const [exchange, setExchange] = useState<any>(null);
+  const [prices, setPrices] = useState<any[]>([]);
+  const [coastStatus, setCoastStatus] = useState<any>(null);
 
   useEffect(() => {
     Promise.all([
@@ -79,8 +82,11 @@ function App() {
       fetch(`${API_URL}/api/signals`).then(r => r.json().catch(() => [])).catch(() => []),
       fetch(`${API_URL}/api/analysis`).then(r => r.json().catch(() => null)).catch(() => null),
       fetch(`${API_URL}/api/analysis/BTC`).then(r => r.json().catch(() => [])).catch(() => []),
+      fetch(`${API_URL}/api/exchange/status`).then(r => r.json().catch(() => null)).catch(() => null),
+      fetch(`${API_URL}/api/coast/prices`).then(r => r.json().catch(() => [])).catch(() => []),
+      fetch(`${API_URL}/api/coast/status`).then(r => r.json().catch(() => null)).catch(() => null),
     ])
-      .then(([h, s, strat, sig, ast, btcAnalysis]) => {
+      .then(([h, s, strat, sig, ast, btcAnalysis, ex, pr, cs]) => {
         setHealth(h);
         setState(s);
         setStrategies(strat);
@@ -88,6 +94,9 @@ function App() {
         setAnalysisStats(ast);
         setCityStats(h?.city || null);
         setAnalysis(btcAnalysis);
+        setExchange(ex);
+        setPrices(Array.isArray(pr) ? pr : []);
+        setCoastStatus(cs);
         // Fetch backtests if city data available
         if (h?.city?.backtests > 0) {
           // Backtests are embedded in city stats, no separate endpoint
@@ -172,6 +181,46 @@ function App() {
     handleRefresh();
   };
 
+  const toggleMode = async () => {
+    const newMode = exchange?.mode === 'live' ? 'paper' : 'live';
+    await fetch(`${API_URL}/api/exchange/mode`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: newMode }),
+    });
+    handleRefresh();
+  };
+
+  const startFeed = async () => {
+    await fetch(`${API_URL}/api/coast/start`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ intervalMs: 30000 }) });
+    handleRefresh();
+  };
+
+  const stopFeed = async () => {
+    await fetch(`${API_URL}/api/coast/stop`, { method: 'POST' });
+    handleRefresh();
+  };
+
+  const refreshPrices = async () => {
+    await fetch(`${API_URL}/api/coast/prices`).then(r => r.json());
+    handleRefresh();
+  };
+
+  const configureExchange = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const form = e.target as HTMLFormElement;
+    const data = {
+      exchangeId: (form.elements.namedItem('exchangeId') as HTMLInputElement).value,
+      apiKey: (form.elements.namedItem('apiKey') as HTMLInputElement).value,
+      secret: (form.elements.namedItem('secret') as HTMLInputElement).value,
+      sandbox: (form.elements.namedItem('sandbox') as HTMLInputElement).checked,
+    };
+    await fetch(`${API_URL}/api/exchange/configure`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    handleRefresh();
+  };
+
   const openModal = (type: string) => { setModalOpen(type); setModalData({}); };
   const closeModal = () => { setModalOpen(''); setModalData({}); };
 
@@ -217,15 +266,17 @@ function App() {
       </header>
 
       {/* ===== TOP SUMMARY CARDS ===== */}
-      <div className="grid" style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>
+      <div className="grid" style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
         <Card title="Status" value={health?.status || '?'} color="#22c55e" />
         <Card title="Positions" value={positions.length} color="#3b82f6" />
         <Card title="Active Directives" value={activeDirectives.length} color="#f59e0b" />
+        <Card title="Exchange Mode" value={exchange?.mode || 'paper'} color={exchange?.mode === 'live' ? '#ef4444' : '#22c55e'} />
       </div>
-      <div className="grid" style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>
+      <div className="grid" style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
         <Card title="Queue" value={health?.river?.queueSize || 0} color="#8b5cf6" />
         <Card title="Strategies" value={cityStats?.strategies || 0} color="#06b6d4" />
         <Card title="Analysis Signals" value={signals.length} color="#ec4899" />
+        <Card title="Live Prices" value={prices.find((p: any) => p.asset === 'BTC')?.price ? `$${prices.find((p: any) => p.asset === 'BTC').price.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : '-'} color="#f59e0b" />
       </div>
 
       {/* ===== ACTION BUTTONS ===== */}
@@ -240,6 +291,10 @@ function App() {
           <button onClick={() => openModal('activate-strategy')} style={{ background: '#06b6d4' }}>Activate Strategy</button>
           <button onClick={() => openModal('run-analysis')} style={{ background: '#ec4899' }}>Run Analysis</button>
           <button onClick={oceanScan} style={{ background: '#ec4899' }}>Ocean Scan</button>
+          <button onClick={toggleMode} style={{ background: exchange?.mode === 'live' ? '#22c55e' : '#ef4444' }}>Toggle {exchange?.mode === 'live' ? 'Paper' : 'Live'}</button>
+          <button onClick={startFeed} style={{ background: '#22c55e' }}>Start Feed</button>
+          <button onClick={stopFeed} style={{ background: '#ef4444' }}>Stop Feed</button>
+          <button onClick={refreshPrices} style={{ background: '#f59e0b' }}>Refresh Prices</button>
         </div>
       </section>
 
@@ -300,6 +355,51 @@ function App() {
           </div>
         </section>
       )}
+
+      {/* ===== EXCHANGE & MARKET COAST ===== */}
+      <section>
+        <h2>Exchange & Market Coast</h2>
+        <div className="grid" style={{ gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <div>
+            <h3 style={{ fontSize: 13, color: '#94a3b8', marginBottom: 8 }}>Configuration</h3>
+            <form onSubmit={configureExchange} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <select name="mode" defaultValue={exchange?.mode || 'paper'} style={{ padding: '6px 8px', background: '#1e293b', border: '1px solid #334155', color: '#e2e8f0', borderRadius: 6 }}>
+                <option value="paper">Paper Trading</option>
+                <option value="live">Live Trading</option>
+              </select>
+              <input name="exchangeId" placeholder="Exchange (e.g. binance)" defaultValue="binance" style={{ padding: '6px 8px', background: '#1e293b', border: '1px solid #334155', color: '#e2e8f0', borderRadius: 6 }} />
+              <input name="apiKey" type="password" placeholder="API Key" style={{ padding: '6px 8px', background: '#1e293b', border: '1px solid #334155', color: '#e2e8f0', borderRadius: 6 }} />
+              <input name="secret" type="password" placeholder="Secret" style={{ padding: '6px 8px', background: '#1e293b', border: '1px solid #334155', color: '#e2e8f0', borderRadius: 6 }} />
+              <label style={{ color: '#94a3b8', fontSize: 12 }}><input name="sandbox" type="checkbox" defaultChecked /> Sandbox Mode</label>
+              <button type="submit">Configure</button>
+            </form>
+          </div>
+          <div>
+            <h3 style={{ fontSize: 13, color: '#94a3b8', marginBottom: 8 }}>Status</h3>
+            <div className="row"><span>Mode</span><span className="badge" style={{ background: exchange?.mode === 'live' ? '#ef4444' : '#22c55e' }}>{exchange?.mode || 'paper'}</span></div>
+            <div className="row"><span>Connected</span><span>{exchange?.connected ? 'YES' : 'NO'}</span></div>
+            <div className="row"><span>Exchange</span><span>{exchange?.exchangeId || '-'}</span></div>
+            <div className="row"><span>Feed</span><span className="badge" style={{ background: coastStatus?.isRunning ? '#22c55e' : '#ef4444' }}>{coastStatus?.isRunning ? 'RUNNING' : 'STOPPED'}</span></div>
+            <div className="row"><span>Last Fetch</span><span>{coastStatus?.lastFetch ? new Date(coastStatus.lastFetch).toLocaleTimeString() : 'Never'}</span></div>
+          </div>
+        </div>
+
+        {prices.length > 0 && (
+          <>
+            <h3 style={{ fontSize: 13, color: '#94a3b8', margin: '16px 0 8px' }}>Live Prices</h3>
+            {prices.map((p: any) => (
+              <div key={p.asset} className="row">
+                <span className="name">{p.asset}</span>
+                <span>${p.price?.toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
+                <span style={{ color: (p.change24h || 0) >= 0 ? '#22c55e' : '#ef4444' }}>
+                  {(p.change24h || 0) >= 0 ? '+' : ''}{(p.change24h || 0).toFixed(2)}%
+                </span>
+                <span className="meta">Vol: ${(p.volume24h || 0).toLocaleString()}</span>
+              </div>
+            ))}
+          </>
+        )}
+      </section>
 
       {/* ===== NODE STATUS ===== */}
       <section>

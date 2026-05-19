@@ -7,27 +7,36 @@ import { TradingRiver } from '../nodes/trading-river';
 import { AnalysisOcean } from '../nodes/analysis-ocean';
 import { StrategyCity } from '../nodes/strategy-city';
 import { Watershed } from '../lib/watershed';
+import { ExchangeClient } from '../lib/exchange';
+import { MarketCoast } from '../nodes/market-coast';
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
 // ===================================================================
-// MOCK EXCHANGE
+// EXCHANGE CLIENT (Paper or Live)
 // ===================================================================
+const exchangeClient = new ExchangeClient({
+  mode: (process.env.TRADING_MODE as 'paper' | 'live') || 'paper',
+  exchangeId: process.env.EXCHANGE_ID || 'binance',
+  apiKey: process.env.EXCHANGE_API_KEY,
+  secret: process.env.EXCHANGE_SECRET,
+  sandbox: process.env.EXCHANGE_SANDBOX !== 'false',
+});
+
+// Backward-compat wrapper for test endpoints
 const mockExchange = {
-  positions: {} as Record<string, { quantity: number; entryPrice: number; currentPrice: number }>,
-  async getPositions() { return { ...this.positions }; },
-  async getPrice(asset: string) { return this.positions[asset]?.currentPrice || 0; },
-  async createOrder(order: any) {
-    if (order.side === 'sell' && this.positions[order.asset]) delete this.positions[order.asset];
-    return { id: 'paper-' + Date.now(), status: 'filled' };
-  },
+  positions: {} as Record<string, any>,
+  async getPositions() { return exchangeClient.getPositions(); },
+  async getPrice(asset: string) { return exchangeClient.getPrice(asset); },
+  async createOrder(order: any) { return exchangeClient.createOrder(order); },
   addPosition(asset: string, quantity: number, entryPrice: number) {
-    this.positions[asset] = { quantity, entryPrice, currentPrice: entryPrice };
+    exchangeClient.addPosition(asset, quantity, entryPrice);
+    this.positions = exchangeClient.paperExchange.positions;
   },
-  setPrice(asset: string, price: number) { if (this.positions[asset]) this.positions[asset].currentPrice = price; },
-  reset() { this.positions = {}; },
+  setPrice(asset: string, price: number) { exchangeClient.setPrice(asset, price); },
+  reset() { exchangeClient.reset(); this.positions = {}; },
 };
 
 const stateStore = {
@@ -47,14 +56,16 @@ const watershed = new Watershed();
 const lake = new StateLake({ nodeName: 'state-lake', exchangeClient: mockExchange, stateStore });
 const forest = new ValidationForest({ nodeName: 'validation-forest', stateLake: lake, exchangeClient: mockExchange });
 const river = new TradingRiver({ nodeName: 'trading-river', watershed });
-const ocean = new AnalysisOcean({ nodeName: 'analysis-ocean', exchangeClient: mockExchange });
+const ocean = new AnalysisOcean({ nodeName: 'analysis-ocean', exchangeClient });
 const city = new StrategyCity({ nodeName: 'strategy-city', watershed });
+const coast = new MarketCoast({ nodeName: 'market-coast', exchangeClient, trackedAssets: ['BTC', 'ETH', 'SOL'] });
 
 watershed.register('state-lake', { elevation: 100, terrain: 'lake', handler: lake });
 watershed.register('validation-forest', { elevation: 700, terrain: 'forest', handler: forest });
 watershed.register('trading-river', { elevation: 400, terrain: 'river', handler: river });
 watershed.register('analysis-ocean', { elevation: 250, terrain: 'ocean', handler: ocean });
 watershed.register('strategy-city', { elevation: 600, terrain: 'city', handler: city });
+watershed.register('market-coast', { elevation: 150, terrain: 'coast', handler: coast });
 
 // ===================================================================
 // RIPPLE ROUTER
@@ -69,6 +80,7 @@ async function routeRipple(ripple: Ripple): Promise<any> {
     else if (nodeName === 'trading-river') await river.receive(route.ripple);
     else if (nodeName === 'analysis-ocean') await ocean.receive(route.ripple);
     else if (nodeName === 'strategy-city') await city.receive(route.ripple);
+    else if (nodeName === 'market-coast') await coast.receive(route.ripple);
   }
   return { routedTo: routes.map(r => r.nodeName) };
 }
@@ -86,6 +98,8 @@ app.get('/api/health', (_req, res) => {
     river: river.getStats(),
     ocean: ocean.getStats(),
     city: city.getStats(),
+    coast: coast.getStatus(),
+    exchange: exchangeClient.getStatus(),
   });
 });
 
@@ -135,17 +149,20 @@ app.post('/api/ripple', async (req, res) => {
 });
 
 // ===================================================================
-// HEARTBEAT — Forest detects, Ocean analyzes, River routes, Lake commits
+// HEARTBEAT — Coast fetches, Forest detects, Ocean analyzes, River routes, Lake commits
 // ===================================================================
 app.post('/api/heartbeat', async (_req, res) => {
-  console.log('[API] Heartbeat — Forest detects, Ocean analyzes, River routes, Lake commits');
+  console.log('[API] Heartbeat — Coast fetches, Forest detects, Ocean analyzes, River routes, Lake commits');
 
-  // Step 1: Forest detects liquidations
+  // Step 1: Coast fetches live prices
+  await coast.fetchPrices();
+  console.log(`[API] Coast fetched prices for ${coast.trackedAssets.length} assets`);
+
+  // Step 2: Forest detects liquidations (existing logic)
   const liquidations = await forest.checkLiquidations();
-  console.log(`[API] Forest detected ${liquidations.length} liquidations`);
 
-  // Step 2: Analysis Ocean runs analysis
-  const analysisAssets = ['BTC', 'ETH', 'SOL'];
+  // Step 3: Analysis Ocean runs analysis
+  const analysisAssets = coast.trackedAssets;
   const analyses: any[] = [];
   for (const asset of analysisAssets) {
     try {
@@ -156,27 +173,19 @@ app.post('/api/heartbeat', async (_req, res) => {
     }
   }
 
-  // Step 3: Route each liquidation through the River
+  // Step 4: Route liquidations (existing logic preserved)
   for (const liq of liquidations) {
-    // Route through River
     await river.receive(liq);
-
-    // River routes to Lake for commit
     const asset = liq.payload.asset;
     const directiveId = liq.payload.directiveId;
-
     delete lake.canonicalState.openPositions[asset];
     if (directiveId && lake.canonicalState.directives[directiveId]) {
       lake.canonicalState.directives[directiveId].status = 'VOID';
       lake.canonicalState.directives[directiveId].invalidatedAt = Date.now();
     }
-    lake.canonicalState.closedPositions.push({
-      asset,
-      closedAt: Date.now(),
-      reason: 'stop_loss',
-      liquidatedBy: 'validation-forest',
-    });
-    delete mockExchange.positions[asset];
+    lake.canonicalState.closedPositions.push({ asset, closedAt: Date.now(), reason: 'stop_loss', liquidatedBy: 'validation-forest' });
+    exchangeClient.paperExchange.positions[asset] && delete exchangeClient.paperExchange.positions[asset];
+    mockExchange.positions[asset] && delete mockExchange.positions[asset];
     lake.canonicalState.lastCommit = Date.now();
     lake.logDecision('LIQUIDATION', { asset, directiveId, price: liq.payload.exitPrice });
   }
@@ -186,7 +195,8 @@ app.post('/api/heartbeat', async (_req, res) => {
     liquidationsDetected: liquidations.length,
     analysesRun: analyses.length,
     analysisSummary: analyses,
-    nodesChecked: ['validation-forest', 'analysis-ocean', 'trading-river', 'strategy-city', 'state-lake'],
+    pricesFetched: coast.priceCache.size,
+    nodesChecked: ['market-coast', 'validation-forest', 'analysis-ocean', 'trading-river', 'strategy-city', 'state-lake'],
     state: lake.getState(),
   });
 });
@@ -264,6 +274,58 @@ app.post('/api/test/reset', (_req, res) => {
 });
 
 // ===================================================================
+// EXCHANGE ENDPOINTS
+// ===================================================================
+app.get('/api/exchange/status', (_req, res) => { res.json(exchangeClient.getStatus()); });
+
+app.post('/api/exchange/configure', (req, res) => {
+  const { exchangeId, apiKey, secret, sandbox } = req.body;
+  exchangeClient.setCredentials(exchangeId, apiKey, secret, sandbox);
+  res.json({ configured: true, status: exchangeClient.getStatus() });
+});
+
+app.post('/api/exchange/mode', (req, res) => {
+  const { mode } = req.body;
+  exchangeClient.setMode(mode);
+  res.json({ mode: exchangeClient.mode, status: exchangeClient.getStatus() });
+});
+
+app.get('/api/exchange/prices', (_req, res) => { res.json(coast.getPriceCache()); });
+
+app.get('/api/exchange/price/:asset', (req, res) => {
+  const price = coast.getPrice(req.params.asset);
+  res.json({ asset: req.params.asset, price, timestamp: Date.now() });
+});
+
+app.get('/api/exchange/balance', async (_req, res) => {
+  const balance = await exchangeClient.getBalance();
+  res.json(balance);
+});
+
+// ===================================================================
+// COAST ENDPOINTS
+// ===================================================================
+app.get('/api/coast/status', (_req, res) => { res.json(coast.getStatus()); });
+
+app.post('/api/coast/start', (req, res) => {
+  const { intervalMs } = req.body;
+  coast.startFeed(intervalMs || 30000);
+  res.json({ started: true, status: coast.getStatus() });
+});
+
+app.post('/api/coast/stop', (_req, res) => {
+  coast.stopFeed();
+  res.json({ stopped: true, status: coast.getStatus() });
+});
+
+app.get('/api/coast/prices', (_req, res) => { res.json(coast.getPriceCache()); });
+
+app.post('/api/coast/assets', (req, res) => {
+  coast.trackedAssets = req.body.assets || ['BTC', 'ETH', 'SOL'];
+  res.json({ updated: true, trackedAssets: coast.trackedAssets });
+});
+
+// ===================================================================
 // DASHBOARD (production only)
 // ===================================================================
 if (process.env.NODE_ENV === 'production') {
@@ -274,11 +336,14 @@ if (process.env.NODE_ENV === 'production') {
 // ===================================================================
 // START
 // ===================================================================
+// Auto-start coast feed
+coast.startFeed(30000);
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Fractal Trading v2 on port ${PORT}`);
-  console.log(`Nodes: state-lake, validation-forest, trading-river, analysis-ocean, strategy-city`);
-  console.log(`POST /api/heartbeat — Forest detects → Ocean analyzes → River routes → Lake commits`);
+  console.log(`Nodes: state-lake, validation-forest, trading-river, market-coast, analysis-ocean, strategy-city`);
+  console.log(`POST /api/heartbeat — Coast fetches → Forest detects → Ocean analyzes → River routes → Lake commits`);
 });
 
 export default app;

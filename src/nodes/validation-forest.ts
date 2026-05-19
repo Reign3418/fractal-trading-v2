@@ -1,11 +1,12 @@
 import { Ripple } from '../lib/ripple';
 import { Basin } from '../lib/basin';
 import { StateLake } from './state-lake';
+import { ExchangeClient } from '../lib/exchange';
 
 interface ValidationForestConfig {
   nodeName?: string;
   stateLake: StateLake;
-  exchangeClient: any;
+  exchangeClient: ExchangeClient | any;
 }
 
 export class ValidationForest {

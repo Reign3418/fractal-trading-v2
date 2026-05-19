@@ -114,3 +114,24 @@ export interface AnalysisResult {
   confidence: number;
   price: number;
 }
+
+// === Exchange Types ===
+export interface ExchangeConfig {
+  mode: 'paper' | 'live';
+  exchangeId: string;
+  apiKey?: string;
+  secret?: string;
+  sandbox?: boolean;
+  trackedAssets: string[];
+  feedIntervalMs: number;
+}
+
+export interface MarketData {
+  asset: string;
+  price: number;
+  change24h: number;
+  volume24h: number;
+  high24h: number;
+  low24h: number;
+  timestamp: number;
+}
