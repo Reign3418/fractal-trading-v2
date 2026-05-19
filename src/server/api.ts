@@ -4,6 +4,8 @@ import { Ripple } from '../lib/ripple';
 import { StateLake } from '../nodes/state-lake';
 import { ValidationForest } from '../nodes/validation-forest';
 import { TradingRiver } from '../nodes/trading-river';
+import { AnalysisOcean } from '../nodes/analysis-ocean';
+import { StrategyCity } from '../nodes/strategy-city';
 import { Watershed } from '../lib/watershed';
 
 const app = express();
@@ -45,10 +47,14 @@ const watershed = new Watershed();
 const lake = new StateLake({ nodeName: 'state-lake', exchangeClient: mockExchange, stateStore });
 const forest = new ValidationForest({ nodeName: 'validation-forest', stateLake: lake, exchangeClient: mockExchange });
 const river = new TradingRiver({ nodeName: 'trading-river', watershed });
+const ocean = new AnalysisOcean({ nodeName: 'analysis-ocean', exchangeClient: mockExchange });
+const city = new StrategyCity({ nodeName: 'strategy-city', watershed });
 
 watershed.register('state-lake', { elevation: 100, terrain: 'lake', handler: lake });
 watershed.register('validation-forest', { elevation: 700, terrain: 'forest', handler: forest });
 watershed.register('trading-river', { elevation: 400, terrain: 'river', handler: river });
+watershed.register('analysis-ocean', { elevation: 250, terrain: 'ocean', handler: ocean });
+watershed.register('strategy-city', { elevation: 600, terrain: 'city', handler: city });
 
 // ===================================================================
 // RIPPLE ROUTER
@@ -61,6 +67,8 @@ async function routeRipple(ripple: Ripple): Promise<any> {
     if (nodeName === 'state-lake') await lake.receive(route.ripple);
     else if (nodeName === 'validation-forest') await forest.receive(route.ripple);
     else if (nodeName === 'trading-river') await river.receive(route.ripple);
+    else if (nodeName === 'analysis-ocean') await ocean.receive(route.ripple);
+    else if (nodeName === 'strategy-city') await city.receive(route.ripple);
   }
   return { routedTo: routes.map(r => r.nodeName) };
 }
@@ -76,6 +84,8 @@ app.get('/api/health', (_req, res) => {
     basin: lake.getBasinSnapshot(),
     forest: forest.getStats(),
     river: river.getStats(),
+    ocean: ocean.getStats(),
+    city: city.getStats(),
   });
 });
 
@@ -125,16 +135,28 @@ app.post('/api/ripple', async (req, res) => {
 });
 
 // ===================================================================
-// HEARTBEAT — Forest → River → Lake
+// HEARTBEAT — Forest detects, Ocean analyzes, River routes, Lake commits
 // ===================================================================
 app.post('/api/heartbeat', async (_req, res) => {
-  console.log('[API] Heartbeat — Forest detects, River routes, Lake commits');
+  console.log('[API] Heartbeat — Forest detects, Ocean analyzes, River routes, Lake commits');
 
   // Step 1: Forest detects liquidations
   const liquidations = await forest.checkLiquidations();
   console.log(`[API] Forest detected ${liquidations.length} liquidations`);
 
-  // Step 2: Route each liquidation through the River
+  // Step 2: Analysis Ocean runs analysis
+  const analysisAssets = ['BTC', 'ETH', 'SOL'];
+  const analyses: any[] = [];
+  for (const asset of analysisAssets) {
+    try {
+      const result = await ocean.analyze(asset);
+      analyses.push({ asset, signal: result.overallSignal, confidence: result.confidence });
+    } catch (e) {
+      console.log(`[API] Analysis failed for ${asset}:`, (e as Error).message);
+    }
+  }
+
+  // Step 3: Route each liquidation through the River
   for (const liq of liquidations) {
     // Route through River
     await river.receive(liq);
@@ -162,9 +184,68 @@ app.post('/api/heartbeat', async (_req, res) => {
   res.json({
     heartbeat: true,
     liquidationsDetected: liquidations.length,
-    nodesChecked: ['validation-forest', 'trading-river', 'state-lake'],
+    analysesRun: analyses.length,
+    analysisSummary: analyses,
+    nodesChecked: ['validation-forest', 'analysis-ocean', 'trading-river', 'strategy-city', 'state-lake'],
     state: lake.getState(),
   });
+});
+
+// ===================================================================
+// STRATEGY CITY ENDPOINTS
+// ===================================================================
+app.get('/api/strategies', (_req, res) => { res.json(city.getStrategies()); });
+
+app.post('/api/strategies', (req, res) => {
+  const strategy = city.createStrategy(req.body);
+  res.json({ created: true, strategy });
+});
+
+app.post('/api/strategies/:id/activate', (req, res) => {
+  const ok = city.activateStrategy(req.params.id);
+  res.json({ activated: ok });
+});
+
+app.post('/api/strategies/:id/pause', (req, res) => {
+  const ok = city.pauseStrategy(req.params.id);
+  res.json({ paused: ok });
+});
+
+app.delete('/api/strategies/:id', (req, res) => {
+  const ok = city.deleteStrategy(req.params.id);
+  res.json({ deleted: ok });
+});
+
+app.post('/api/strategies/:id/params', (req, res) => {
+  const ok = city.updateStrategyParams(req.params.id, req.body);
+  res.json({ updated: ok });
+});
+
+app.post('/api/strategies/:id/backtest', (req, res) => {
+  const result = city.runBacktest(req.params.id, req.body.candles || []);
+  res.json({ backtest: true, result });
+});
+
+app.get('/api/signals', (_req, res) => { res.json(city.getSignalLog(50)); });
+
+// ===================================================================
+// ANALYSIS OCEAN ENDPOINTS
+// ===================================================================
+app.get('/api/analysis', (_req, res) => { res.json(ocean.getStats()); });
+
+app.get('/api/analysis/:asset', (req, res) => {
+  res.json(ocean.getAnalysisHistory(req.params.asset, 10));
+});
+
+app.post('/api/analyze', async (req, res) => {
+  const { asset } = req.body;
+  const result = await ocean.analyze(asset || 'BTC');
+  res.json({ analyzed: true, result });
+});
+
+app.get('/api/detectors/:asset', (req, res) => {
+  const history = ocean.getAnalysisHistory(req.params.asset, 1);
+  res.json(history.length > 0 ? history[0].detectors : []);
 });
 
 // ===================================================================
@@ -196,8 +277,8 @@ if (process.env.NODE_ENV === 'production') {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Fractal Trading v2 on port ${PORT}`);
-  console.log(`Nodes: state-lake, validation-forest, trading-river`);
-  console.log(`POST /api/heartbeat — Forest detects → River routes → Lake commits`);
+  console.log(`Nodes: state-lake, validation-forest, trading-river, analysis-ocean, strategy-city`);
+  console.log(`POST /api/heartbeat — Forest detects → Ocean analyzes → River routes → Lake commits`);
 });
 
 export default app;

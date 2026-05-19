@@ -2,7 +2,7 @@ export interface RippleData {
   id: string;
   source: string;
   target?: string | null;
-  type: 'FLOW' | 'INLET' | 'OVERFLOW' | 'EVAPORATION' | 'ALERT' | 'INVALIDATION' | 'STATE_PROPOSAL' | 'HEARTBEAT' | 'SYNC';
+  type: 'FLOW' | 'INLET' | 'OVERFLOW' | 'EVAPORATION' | 'ALERT' | 'INVALIDATION' | 'STATE_PROPOSAL' | 'HEARTBEAT' | 'SYNC' | 'SIGNAL' | 'ANALYSIS';
   payload: Record<string, any>;
   scent: Record<string, any>;
   intensity: number;
@@ -59,3 +59,58 @@ export const TERRAIN_ABSORPTION: Record<TerrainType, number> = {
   planetary: 0.60,
   atmosphere: 0.20,
 };
+
+// === Strategy City Types ===
+export interface Strategy {
+  id: string;
+  name: string;
+  asset: string;
+  type: 'momentum' | 'mean_reversion' | 'breakout' | 'trend_following';
+  parameters: Record<string, number>;
+  status: 'active' | 'paused' | 'backtesting';
+  createdAt: number;
+  lastSignalAt: number | null;
+  signalsGenerated: number;
+  winCount: number;
+  lossCount: number;
+}
+
+export interface BacktestResult {
+  id: string;
+  strategyId: string;
+  asset: string;
+  startTime: number;
+  endTime: number;
+  totalTrades: number;
+  winRate: number;
+  profitFactor: number;
+  maxDrawdown: number;
+  sharpeRatio: number;
+  pnl: number;
+}
+
+// === Analysis Ocean Types ===
+export interface IndicatorValue {
+  name: string;
+  value: number;
+  signal: 'bullish' | 'bearish' | 'neutral';
+  timestamp: number;
+}
+
+export interface DetectorReading {
+  name: string;
+  status: 'normal' | 'warning' | 'critical';
+  value: number;
+  threshold: number;
+  message: string;
+}
+
+export interface AnalysisResult {
+  asset: string;
+  timestamp: number;
+  indicators: IndicatorValue[];
+  detectors: DetectorReading[];
+  overallSignal: 'strong_buy' | 'buy' | 'neutral' | 'sell' | 'strong_sell';
+  confidence: number;
+  price: number;
+}
